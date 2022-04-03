@@ -9,12 +9,16 @@
 //  state (which it does)
 
 #include <stdio.h>
+
 #include "pico/stdlib.h"
+
 #include "sd_card.h"
+
 #include "hardware/pio.h"
 #include "hardware/gpio.h"
 #include "hardware/dma.h"
 #include "sd_card.pio.h"
+
 #include "crc7.h"
 #include "crc-itu-t.h"
 
@@ -215,11 +219,6 @@ static void __time_critical_func(start_chain_dma_read_with_address_size_only)(ui
                           false);
 
     gpio_set_mask(1);
-    //    if (sniff)
-    //    {
-    //        dma_enable_sniffer(sd_data_dma_channel, DMA_SNIFF_CTRL_CALC_VALUE_CRC16);
-    //        dma_hw->sniff_data = 0;
-    //    }
     dma_channel_start(sd_chain_dma_channel);
     gpio_clr_mask(1);
 }
@@ -246,6 +245,7 @@ static void __time_critical_func(start_chain_dma_read_with_full_cb)(uint sm, uin
     dma_channel_start(sd_chain_dma_channel);
     gpio_clr_mask(1);
 }
+
 static __attribute__((used)) __noinline void spoop() {
     int dma_channel = 3;
     dma_channel_config config = dma_channel_get_default_config(dma_channel);
@@ -257,6 +257,7 @@ static __attribute__((used)) __noinline void spoop() {
 
     *(volatile uint32_t*)(DMA_BASE + DMA_CH3_AL1_CTRL_OFFSET) = 0x00089831;
 }
+
 static int __time_critical_func(start_read)(int sm, uint32_t* buf, uint byte_length, bool enable) {
     spoop();
     int rc;
@@ -600,15 +601,6 @@ static int sd_init(bool _allow_four_data_pins) {
     pio_sm_init(sd_pio, SD_DAT_SM, cmd_or_dat_offset, &c);
 
     sd_set_clock_divider(50);
-    //    int div = 50;
-    //    pio_sm_set_clkdiv_int_frac(pio, SD_CLK_SM, div, 0); // run at 240 kHz as required
-    //    initially pio_sm_set_clkdiv_int_frac(pio, SD_CMD_SM, div, 0); // run at 240 kHz as
-    //    required initially pio_sm_set_clkdiv_int_frac(pio, SD_DAT_SM, div, 0); // run at 240 kHz
-    //    as required initially
-    // //   pio_clkdiv_restart_mask(pio, (1u << SD_CMD_SM) | (1u << SD_CLK_SM) | (1u << SD_DAT_SM));
-
-    // set later anyway
-    //    pio_set_wrap(pio, SD_DAT_SM, sd_cmd_or_dat_wrap_target, sd_cmd_or_dat_wrap);
 
     pio_sm_exec(sd_pio, SD_CMD_SM, pio_encode_jmp(sd_cmd_or_dat_offset_no_arg_state_wait_high));
     pio_sm_exec(sd_pio, SD_DAT_SM,
@@ -620,13 +612,10 @@ static int sd_init(bool _allow_four_data_pins) {
     pio_sm_set_pindirs_with_mask(sd_pio, SD_CLK_SM, all_pin_mask, all_pin_mask);
     pio_sm_exec(sd_pio, SD_DAT_SM, pio_encode_set(pio_pins, dat_pin_mask));
 
-    // pio_sm_enable(pio, SD_CLK_SM, 1);
-    //    pio_sm_put(sd_pio, SD_CMD_SM, sd_pio_cmd(sd_offset_state_send_bits, 72 - 1));
     // we use 80 rather than 72 so we can keep our 16 bit instruction stream aligned
     pio_sm_put(sd_pio, SD_CMD_SM, sd_pio_cmd(sd_cmd_or_dat_offset_state_send_bits, 80 - 1));
     pio_sm_put(sd_pio, SD_CMD_SM, 0xffffffff);
     pio_sm_put(sd_pio, SD_CMD_SM, 0xffffffff);
-    //    pio_sm_put(sd_pio, SD_CMD_SM, 0xff000000 | (sd_offset_dump_osr_then_wait_high << 16u));
     pio_sm_put(sd_pio, SD_CMD_SM,
                0xffff0000 | pio_encode_jmp(sd_cmd_or_dat_offset_no_arg_state_wait_high));
     pio_enable_sm_mask_in_sync(sd_pio, (1u << SD_CMD_SM) | (1u << SD_CLK_SM) | (1u << SD_DAT_SM));
@@ -711,7 +700,6 @@ int sd_readblocks_sync(uint32_t* buf, uint32_t block, uint block_count) {
         *p++ = 128;
         // for now we read the CRCs also
         *p++ = (uintptr_t)(crcs + i * crc_words);
-        //        printf("%08x\n", (uint)(uint32_t)(crcs + i * crc_words));
         *p++ = crc_words;
     }
     *p++ = 0;
@@ -722,12 +710,6 @@ int sd_readblocks_sync(uint32_t* buf, uint32_t block, uint block_count) {
         while (!sd_scatter_read_complete(&rc)) {
             tight_loop_contents();
         }
-        //        for(int i=0;i<block_count;i++)
-        //        {
-        //            printf("y %08x\n", (uint) crcs[i * crc_words]);
-        //        }
-
-        // printf("finished\n");
     }
     return rc;
 }
@@ -809,7 +791,6 @@ int sd_readblocks_scatter_async(uint32_t* control_words, uint32_t block, uint bl
         rc = sd_command(sd_make_command(17, block >> 24, block >> 16, block >> 8, block & 0xffu),
                         response_buffer, 6);
     } else {
-        //        read_status(true);
         // todo can we expect support for 23?
         rc = sd_command(sd_make_command(23, block_count >> 24, block_count >> 16, block_count >> 8,
                                         block_count & 0xffu),
@@ -825,12 +806,6 @@ int sd_readblocks_scatter_async(uint32_t* control_words, uint32_t block, uint bl
 int check_crc_count;
 
 bool sd_scatter_read_complete(int* status) {
-    //    printf("%d:%d %d:%d %d:%d %d\n", dma_busy(sd_chain_dma_channel),
-    //    (uint)dma_hw->ch[sd_chain_dma_channel].transfer_count,
-    //           dma_busy(sd_data_dma_channel),
-    //           (uint)dma_hw->ch[sd_data_dma_channel].transfer_count, dma_busy(sd_pio_dma_channel),
-    //           (uint)dma_hw->ch[sd_pio_dma_channel].transfer_count,
-    //           (uint)pio->sm[SD_DAT_SM].addr);
     // this is a bit half arsed atm
     bool rc;
     if (dma_channel_is_busy(sd_chain_dma_channel) || dma_channel_is_busy(sd_data_dma_channel) ||
@@ -898,6 +873,7 @@ static uint32_t dma_ctrl_for(enum dma_channel_transfer_size size, bool src_incr,
     channel_config_set_enable(&c, enable);
     return c.ctrl;
 }
+
 //#define CRC_FIRST
 // note caller must make space for CRC (2 word) in 4 bit mode
 int sd_writeblocks_async(const uint32_t* data, uint32_t sector_num, uint sector_count) {
@@ -1073,7 +1049,6 @@ bool sd_write_complete(int* status) {
     return rc;
 }
 
-#if 1
 // note caller must make space for CRC (2 word) in 4 bit mode
 int sd_read_sectors_1bit_crc_async(uint32_t* sector_buf, uint32_t sector, uint sector_count) {
     uint32_t response_buffer[5];
@@ -1162,4 +1137,3 @@ int sd_read_sectors_1bit_crc_async(uint32_t* sector_buf, uint32_t sector, uint s
     return rc;
 }
 
-#endif

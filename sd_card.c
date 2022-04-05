@@ -32,16 +32,13 @@
 #define sd_debug(format, args...) (void)0
 #endif
 
-#define CMD(n) ((n) + 0x40)
-
 static inline uint32_t sd_pio_cmd(uint cmd, uint32_t param) {
     assert(cmd <= sd_cmd_or_dat_program.length);
     assert(param <= 0xffff);
     return (pio_encode_jmp(cmd) << 16u) | param;
 }
 
-#define SD_PIO_CMD(a, b)
-PIO sd_pio = pio1;
+static PIO sd_pio = pio1;
 
 static uint sd_dat_pin_base; // todo remove me
 // todo struct these
@@ -55,23 +52,6 @@ static int sd_pio_dma_channel;
 
 static bool allow_four_data_pins;
 static bool bytes_swap_on_read = false;
-
-struct message {
-    int len;
-    uint8_t msg[8];
-};
-
-static inline void check_pio_debug(const char* s) {
-#ifndef NDEBUG
-    static int counter = 0;
-    counter++;
-    uint32_t debug = sd_pio->fdebug & 0xffffff;
-    if (debug) {
-        printf("AWOOGA: %d %s %08x\n", counter, s, (uint)debug);
-        sd_pio->fdebug = debug;
-    }
-#endif
-}
 
 static inline uint64_t sd_make_command(uint8_t cmd, uint8_t b0, uint8_t b1, uint8_t b2,
                                        uint8_t b3) {
@@ -98,9 +78,7 @@ inline static int safe_wait_tx_empty(pio_hw_t* pio, uint sm) {
     while (!pio_sm_is_tx_fifo_empty(pio, sm)) {
         wooble++;
         if (wooble > 1000000) {
-            check_pio_debug("stuck");
             printf("stuck %d @ %d\n", sm, (int)pio->sm[sm].addr);
-            __breakpoint();
             return SD_ERR_STUCK;
         }
     }
@@ -112,9 +90,7 @@ inline static int safe_wait_tx_not_full(pio_hw_t* pio, uint sm) {
     while (pio_sm_is_tx_fifo_full(pio, sm)) {
         wooble++;
         if (wooble > 1000000) {
-            check_pio_debug("stuck");
             printf("stuck %d @ %d\n", sm, (int)pio->sm[sm].addr);
-            __breakpoint();
             return SD_ERR_STUCK;
         }
     }
@@ -126,10 +102,8 @@ inline static int safe_dma_wait_for_finish(pio_hw_t* pio, uint sm, uint chan) {
     while (dma_channel_is_busy(chan)) {
         wooble++;
         if (wooble > 8000000) {
-            check_pio_debug("stuck dma");
             printf("stuck dma channel %d rem %08x %d @ %d\n", chan,
                    (uint)dma_hw->ch[chan].transfer_count, sm, (int)pio->sm[sm].addr);
-            __breakpoint();
             return SD_ERR_STUCK;
         }
     }
@@ -137,11 +111,9 @@ inline static int safe_dma_wait_for_finish(pio_hw_t* pio, uint sm, uint chan) {
 }
 
 static inline int acquiesce_sm(int sm) {
-    check_pio_debug("ac1");
     int rc = safe_wait_tx_empty(sd_pio, sm);
     if (rc)
         return rc;
-    check_pio_debug("ac2");
     uint32_t foo = 0;
     uint32_t timeout = 1000000;
     while (--timeout) {
@@ -154,7 +126,6 @@ static inline int acquiesce_sm(int sm) {
     }
     if (!timeout)
         return SD_ERR_STUCK;
-    check_pio_debug("ac3");
     return SD_OK;
 }
 
@@ -265,7 +236,6 @@ static int __time_critical_func(start_read)(int sm, uint32_t* buf, uint byte_len
     rc = safe_wait_tx_not_full(sd_pio, sm);
     if (rc)
         return rc;
-    check_pio_debug("sd_repsone_dma");
     if (bus_width == bw_wide && sm != SD_CMD_SM) {
         pio_sm_put(sd_pio, sm,
                    sd_pio_cmd(sd_cmd_or_dat_offset_state_receive_bits, bit_length / 4 - 1));
@@ -548,21 +518,19 @@ static int sd_init(bool _allow_four_data_pins) {
     gpio_set_function(sd_clk_pin, GPIO_FUNC_PIO1);
     gpio_set_function(sd_cmd_pin, GPIO_FUNC_PIO1);
     gpio_set_function(sd_dat_pin_base, GPIO_FUNC_PIO1);
-    gpio_set_pulls(sd_clk_pin, false, true);
-    gpio_set_pulls(sd_cmd_pin, true, false);
-    gpio_set_pulls(sd_dat_pin_base, true, false);
-    allow_four_data_pins = _allow_four_data_pins;
-
-    // Have to set pulls on other pins regardless otherwise SD card fails to
-    // initialise in 1 bit mode
     gpio_set_function(sd_dat_pin_base + 1, GPIO_FUNC_PIO1);
     gpio_set_function(sd_dat_pin_base + 2, GPIO_FUNC_PIO1);
     gpio_set_function(sd_dat_pin_base + 3, GPIO_FUNC_PIO1);
+    gpio_set_pulls(sd_clk_pin, false, true);
+    gpio_set_pulls(sd_cmd_pin, true, false);
+    gpio_set_pulls(sd_dat_pin_base, true, false);
+    // Have to set pulls on other pins regardless otherwise SD card fails to
+    // initialise in 1 bit mode
     gpio_set_pulls(sd_dat_pin_base + 1, true, false);
     gpio_set_pulls(sd_dat_pin_base + 2, true, false);
     gpio_set_pulls(sd_dat_pin_base + 3, true, false);
+    allow_four_data_pins = _allow_four_data_pins;
 
-    static bool added; // todo this is a temporary hack as we don't free
     static uint cmd_or_dat_offset;
     static uint clk_program_offset;
 
@@ -571,12 +539,9 @@ static int sd_init(bool _allow_four_data_pins) {
     sd_chain_dma_channel = dma_claim_unused_channel(true);
     sd_pio_dma_channel = dma_claim_unused_channel(true);
 
-    if (!added) {
-        cmd_or_dat_offset = pio_add_program(sd_pio, &sd_cmd_or_dat_program);
-        assert(!cmd_or_dat_offset); // we don't add this later because it is assumed to be 0
-        clk_program_offset = pio_add_program(sd_pio, &sd_clk_program);
-        added = true;
-    }
+    cmd_or_dat_offset = pio_add_program(sd_pio, &sd_cmd_or_dat_program);
+    assert(!cmd_or_dat_offset); // we don't add this later because it is assumed to be 0
+    clk_program_offset = pio_add_program(sd_pio, &sd_clk_program);
 
     pio_sm_config c = sd_clk_program_get_default_config(clk_program_offset);
     sm_config_set_sideset_pins(&c, sd_clk_pin);
@@ -626,7 +591,6 @@ static int sd_init(bool _allow_four_data_pins) {
     uint8_t* byte_buf = (uint8_t*)response_buffer;
     fixup_cmd_response_48(response_buffer);
     if (byte_buf[4] != 0xa5) {
-        __breakpoint();
         printf("R7 check pattern doesn't match sent\r\n");
         return -1;
     }
@@ -651,9 +615,8 @@ static int sd_init(bool _allow_four_data_pins) {
     sd_wait();
 
     int rc = sd_set_wide_bus(allow_four_data_pins);
-    if (!rc) {
+    if (!rc)
         rc = sd_set_clock_divider(1); // as fast as possible please
-    }
     return rc;
 }
 
@@ -704,12 +667,9 @@ int sd_readblocks_sync(uint32_t* buf, uint32_t block, uint block_count) {
     *p++ = 0;
     *p++ = 0;
     int rc = sd_readblocks_scatter_async(ctrl_words, block, block_count);
-    if (!rc) {
-        //        printf("waiting for finish\n");
-        while (!sd_scatter_read_complete(&rc)) {
+    if (!rc)
+        while (!sd_scatter_read_complete(&rc))
             tight_loop_contents();
-        }
-    }
     return rc;
 }
 
@@ -732,10 +692,9 @@ static uint32_t* start_read_to_buf(int sm, uint32_t* buf, uint byte_length, bool
             pio_sm_set_wrap(sd_pio, sm, sd_cmd_or_dat_wrap_target, sd_cmd_or_dat_wrap);
     }
     // add zero padding to word boundary if necessary
-    if (bit_length & 31u) {
+    if (bit_length & 31u)
         *buf++ = sd_pio_cmd(sd_cmd_or_dat_offset_state_inline_instruction,
                             pio_encode_in(pio_null, 32 - (bit_length & 31u)));
-    }
     *buf++ = sd_pio_cmd(sd_cmd_or_dat_offset_state_inline_instruction,
                         pio_encode_jmp(sm == SD_DAT_SM
                                            ? sd_cmd_or_dat_offset_no_arg_state_waiting_for_cmd
@@ -751,16 +710,14 @@ int sd_readblocks_scatter_async(uint32_t* control_words, uint32_t block, uint bl
     uint32_t total = 0;
     uint32_t* p = control_words;
     while (p[0]) {
-        //        printf("%p %08x %08x\n", p, (uint)p[0], (uint)p[1]);
         assert(p[1]);
         total += p[1];
         p += 2;
     }
 
     // todo further state checks
-    while (sd_pio->sm[SD_DAT_SM].addr != sd_cmd_or_dat_offset_no_arg_state_waiting_for_cmd) {
+    while (sd_pio->sm[SD_DAT_SM].addr != sd_cmd_or_dat_offset_no_arg_state_waiting_for_cmd)
         printf("oops %d\n", (uint)sd_pio->sm[SD_DAT_SM].addr);
-    }
     assert(sd_pio->sm[SD_DAT_SM].addr == sd_cmd_or_dat_offset_no_arg_state_waiting_for_cmd);
     assert(pio_sm_is_rx_fifo_empty(sd_pio, SD_DAT_SM));
     assert(block_count <= PICO_SD_MAX_BLOCK_COUNT);
@@ -769,9 +726,8 @@ int sd_readblocks_scatter_async(uint32_t* control_words, uint32_t block, uint bl
     start_chain_dma_read_with_address_size_only(SD_DAT_SM, control_words, !bytes_swap_on_read,
                                                 false);
     uint32_t* buf = pio_cmd_buf;
-    for (int i = 0; i < block_count; i++) {
+    for (int i = 0; i < block_count; i++)
         buf = start_read_to_buf(SD_DAT_SM, buf, 512, !i);
-    }
 
     dma_channel_config c = dma_channel_get_default_config(sd_pio_dma_channel);
     channel_config_set_read_increment(&c, true);
@@ -786,10 +742,10 @@ int sd_readblocks_scatter_async(uint32_t* control_words, uint32_t block, uint bl
     // dma_channel_start(sd_pio_dma_channel);
     assert(block_count);
     int rc;
-    if (block_count == 1) {
+    if (block_count == 1)
         rc = sd_command(sd_make_command(17, block >> 24, block >> 16, block >> 8, block & 0xffu),
                         response_buffer, 6);
-    } else {
+    else {
         // todo can we expect support for 23?
         rc = sd_command(sd_make_command(23, block_count >> 24, block_count >> 16, block_count >> 8,
                                         block_count & 0xffu),
@@ -810,13 +766,11 @@ bool sd_scatter_read_complete(int* status) {
     if (dma_channel_is_busy(sd_chain_dma_channel) || dma_channel_is_busy(sd_data_dma_channel) ||
         dma_channel_is_busy(sd_pio_dma_channel)) {
         rc = false;
-    } else {
+    } else
         rc = (sd_pio->sm[SD_DAT_SM].addr == sd_cmd_or_dat_offset_no_arg_state_waiting_for_cmd &&
               pio_sm_is_tx_fifo_empty(sd_pio, SD_DAT_SM));
-    }
     int s = SD_OK;
     if (rc) {
-        //        read_status(true);
         for (int i = 0; i < check_crc_count; i++) {
             if ((crcs[i * 2] >> 16u) != crcs[i * 2 + 1]) {
                 printf("CRC error on block %d\n", i);
@@ -854,10 +808,8 @@ static void __time_critical_func(start_chain_dma_write)(uint sm, uint32_t* buf) 
     gpio_clr_mask(1);
 }
 
-static __unused uint8_t flapulent[1024];
-static __unused uint32_t flap_count;
-uint32_t zeroes;
-uint32_t start_bit = 0xfffffffe;
+static uint32_t zeroes;
+static uint32_t start_bit = 0xfffffffe;
 
 static uint32_t dma_ctrl_for(enum dma_channel_transfer_size size, bool src_incr, bool dst_incr,
                              uint dreq, uint chain_to, bool ring_sel, uint ring_size, bool enable) {
@@ -873,36 +825,9 @@ static uint32_t dma_ctrl_for(enum dma_channel_transfer_size size, bool src_incr,
     return c.ctrl;
 }
 
-//#define CRC_FIRST
 // note caller must make space for CRC (2 word) in 4 bit mode
 int sd_writeblocks_async(const uint32_t* data, uint32_t sector_num, uint sector_count) {
     uint32_t response_buffer[5];
-
-#ifdef CRC_FIRST
-    // lets crc the first sector
-    dma_channel_config c = dma_channel_get_default_config(sd_data_dma_channel);
-    if (true) {
-        channel_config_set_bswap(&c, true);
-        dma_sniffer_enable(sd_data_dma_channel, DMA_SNIFF_CTRL_CALC_VALUE_CRC16, true);
-        dma_sniffer_set_byte_swap_enabled(true);
-    } else {
-        dma_sniffer_enable(sd_data_dma_channel, DMA_SNIFF_CTRL_CALC_VALUE_CRC16, true);
-    }
-    channel_config_set_read_increment(&c, true);
-    channel_config_set_write_increment(&c, false);
-    channel_config_set_dreq(&c, DREQ_FORCE);
-    dma_channel_configure(sd_data_dma_channel, &c,
-                          flapulent, // dest
-                          data,      // src
-                          128, false);
-    hw_set_bits(&dma_hw->ch[sd_data_dma_channel].al1_ctrl, DMA_CH0_CTRL_TRIG_BSWAP_BITS);
-    dma_hw->sniff_data = 0;
-    dma_channel_start(sd_data_dma_channel);
-    dma_channel_wait_for_finish_blocking(sd_data_dma_channel);
-    printf("Sniff raw %08x, word %04x\n", (uint)dma_hw->sniff_data, __bswap16(dma_hw->sniff_data));
-    // todo we need to be able to reset the sniff data correctly
-    crcs[0] = __bswap16(dma_hw->sniff_data);
-#endif
 
     uint32_t* buf = pio_cmd_buf;
     for (int i = 0; i < sector_count; i++) {
@@ -914,24 +839,12 @@ int sd_writeblocks_async(const uint32_t* data, uint32_t sector_num, uint sector_
     *buf++ = sd_pio_cmd(sd_cmd_or_dat_offset_state_inline_instruction,
                         pio_encode_jmp(sd_cmd_or_dat_offset_no_arg_state_wait_high));
 
-    if (sector_count > (PICO_SD_MAX_BLOCK_COUNT - 1) / 4) {
+    if (sector_count > (PICO_SD_MAX_BLOCK_COUNT - 1) / 4)
         panic("too many blocks for now");
-    }
 
     assert(pio_sm_is_tx_fifo_empty(sd_pio, SD_DAT_SM));
 
     uint32_t* p = ctrl_words;
-//#define SEND_TO_BUFFER
-#ifdef SEND_TO_BUFFER
-    uint32_t* output_buffer = flapulent;
-    uint32_t offset = 0;
-#define build_transfer(src, words, size, flags)                                                    \
-    *p++ = (uintptr_t)(src);                                                                       \
-    *p++ = output_buffer + offset;                                                                 \
-    *p++ = words;                                                                                  \
-    offset += words;                                                                               \
-    *p++ = dma_ctrl_for(size, true, true, DREQ_FORCE, sd_chain_dma_channel, 0, 0, true) | (flags);
-#else
 #define build_transfer(src, words, size, flags)                                                    \
     *p++ = (uintptr_t)(src);                                                                       \
     *p++ = (uintptr_t)(&sd_pio->txf[SD_DAT_SM]);                                                   \
@@ -940,51 +853,39 @@ int sd_writeblocks_async(const uint32_t* data, uint32_t sector_num, uint sector_
                         true) |                                                                    \
            (flags);
 
-#endif
     for (int i = 0; i < sector_count; i++) {
         // first cb - zero out sniff data
-#ifndef CRC_FIRST
         *p++ = (uintptr_t)&zeroes;
         *p++ = (uintptr_t)(&dma_hw->sniff_data);
         *p++ = 1;
         *p++ =
             dma_ctrl_for(DMA_SIZE_32, false, false, DREQ_FORCE, sd_chain_dma_channel, 0, 0, true);
-#endif
         // second cb - send bits command
         build_transfer(pio_cmd_buf + i, 1, DMA_SIZE_32, 0);
         build_transfer(&start_bit, 1, DMA_SIZE_32, 0);
         // third cb - 128 words of sector data
         build_transfer(data + i * 128, 128, DMA_SIZE_32,
                        DMA_CH0_CTRL_TRIG_BSWAP_BITS | DMA_CH0_CTRL_TRIG_SNIFF_EN_BITS);
-//        // fourth cb - transfer sniff
-#ifdef CRC_FIRST
-        build_transfer(crcs, 1, DMA_SIZE_32, DMA_CH0_CTRL_TRIG_BSWAP_BITS);
-#else
+        // fourth cb - transfer sniff
         // note offset of 2, since we bswap the data
         build_transfer((uintptr_t)&dma_hw->sniff_data, 1, DMA_SIZE_16,
                        0); // DMA_CH0_CTRL_TRIG_BSWAP_BITS);
-#endif
     }
     // final cb - return to wait state
     build_transfer(pio_cmd_buf + sector_count, 1, DMA_SIZE_32, 0);
-#ifdef SEND_TO_BUFFER
-    flap_count = offset;
-#endif
     *p++ = 0;
     *p++ = 0;
 
     // todo further state checks
-    while (sd_pio->sm[SD_DAT_SM].addr != sd_cmd_or_dat_offset_no_arg_state_waiting_for_cmd) {
+    while (sd_pio->sm[SD_DAT_SM].addr != sd_cmd_or_dat_offset_no_arg_state_waiting_for_cmd)
         printf("oops %d\n", (uint)sd_pio->sm[SD_DAT_SM].addr);
-    }
     assert(sd_pio->sm[SD_DAT_SM].addr == sd_cmd_or_dat_offset_no_arg_state_waiting_for_cmd);
     assert(pio_sm_is_tx_fifo_empty(sd_pio, SD_DAT_SM));
     pio_sm_put(sd_pio, SD_DAT_SM,
                sd_pio_cmd(sd_cmd_or_dat_offset_state_inline_instruction,
                           pio_encode_jmp(sd_cmd_or_dat_offset_no_arg_state_wait_high)));
-    while (sd_pio->sm[SD_DAT_SM].addr != sd_cmd_or_dat_offset_no_arg_state_waiting_for_cmd) {
+    while (sd_pio->sm[SD_DAT_SM].addr != sd_cmd_or_dat_offset_no_arg_state_waiting_for_cmd)
         printf("reps %d\n", (uint)sd_pio->sm[SD_DAT_SM].addr);
-    }
 
     assert(sector_count);
     int rc = sd_set_wide_bus(false); // use 1 bit writes for now
@@ -1055,9 +956,8 @@ int sd_read_sectors_1bit_crc_async(uint32_t* sector_buf, uint32_t sector, uint s
     sd_set_wide_bus(false);
     assert(pio_sm_is_rx_fifo_empty(sd_pio, SD_DAT_SM));
 
-    if (sector_count > (PICO_SD_MAX_BLOCK_COUNT - 1) / 4) {
+    if (sector_count > (PICO_SD_MAX_BLOCK_COUNT - 1) / 4)
         panic("too many blocks for now");
-    }
 
     check_crc_count = sector_count;
     uint32_t* p = ctrl_words;
@@ -1092,9 +992,8 @@ int sd_read_sectors_1bit_crc_async(uint32_t* sector_buf, uint32_t sector, uint s
     *p++ = 0;
 
     // todo further state checks
-    while (sd_pio->sm[SD_DAT_SM].addr != sd_cmd_or_dat_offset_no_arg_state_waiting_for_cmd) {
+    while (sd_pio->sm[SD_DAT_SM].addr != sd_cmd_or_dat_offset_no_arg_state_waiting_for_cmd)
         printf("oops %d\n", (uint)sd_pio->sm[SD_DAT_SM].addr);
-    }
     assert(sd_pio->sm[SD_DAT_SM].addr == sd_cmd_or_dat_offset_no_arg_state_waiting_for_cmd);
     assert(pio_sm_is_rx_fifo_empty(sd_pio, SD_DAT_SM));
     assert(sector_count <= PICO_SD_MAX_BLOCK_COUNT);
@@ -1103,9 +1002,8 @@ int sd_read_sectors_1bit_crc_async(uint32_t* sector_buf, uint32_t sector, uint s
     // dma_enable_sniffer_byte_swap(true);
     start_chain_dma_read_with_full_cb(SD_DAT_SM, ctrl_words);
     uint32_t* buf = pio_cmd_buf;
-    for (int i = 0; i < sector_count; i++) {
+    for (int i = 0; i < sector_count; i++)
         buf = start_read_to_buf(SD_DAT_SM, buf, 512, !i);
-    }
     dma_channel_config c = dma_channel_get_default_config(sd_pio_dma_channel);
     channel_config_set_read_increment(&c, true);
     channel_config_set_write_increment(&c, false);
@@ -1118,11 +1016,11 @@ int sd_read_sectors_1bit_crc_async(uint32_t* sector_buf, uint32_t sector, uint s
     dma_channel_start(sd_pio_dma_channel);
     assert(sector_count);
     int rc;
-    if (sector_count == 1) {
+    if (sector_count == 1)
         rc =
             sd_command(sd_make_command(17, sector >> 24, sector >> 16, sector >> 8, sector & 0xffu),
                        response_buffer, 6);
-    } else {
+    else {
         //        read_status(true);
         // todo can we expect support for 23?
         rc = sd_command(sd_make_command(23, sector_count >> 24, sector_count >> 16,

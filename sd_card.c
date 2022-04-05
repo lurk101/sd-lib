@@ -25,12 +25,6 @@
 #define SD_CLK_SM 0u
 #define SD_CMD_SM 1u
 #define SD_DAT_SM 2u
-// pins are hard-coded
-
-// todo this is very much a WIP - lots of hacked together stuff and test code that needs to be
-// teased into an actual sensible library with error handling
-
-// todo note there is a lot of crud in here right now
 
 #if 0
 #define sd_debug(format, args...) printf(format, ##args)
@@ -54,10 +48,10 @@ static uint sd_dat_pin_base; // todo remove me
 static uint8_t rca_high, rca_low;
 static enum bus_width { bw_unknown, bw_narrow, bw_wide } bus_width;
 
-const int sd_cmd_dma_channel = 11;
-const int sd_data_dma_channel = 10;
-const int sd_chain_dma_channel = 9;
-const int sd_pio_dma_channel = 8;
+static int sd_cmd_dma_channel;
+static int sd_data_dma_channel;
+static int sd_chain_dma_channel;
+static int sd_pio_dma_channel;
 
 static bool allow_four_data_pins;
 static bool bytes_swap_on_read = false;
@@ -571,6 +565,11 @@ static int sd_init(bool _allow_four_data_pins) {
     static bool added; // todo this is a temporary hack as we don't free
     static uint cmd_or_dat_offset;
     static uint clk_program_offset;
+
+    sd_cmd_dma_channel = dma_claim_unused_channel(true);
+    sd_data_dma_channel = dma_claim_unused_channel(true);
+    sd_chain_dma_channel = dma_claim_unused_channel(true);
+    sd_pio_dma_channel = dma_claim_unused_channel(true);
 
     if (!added) {
         cmd_or_dat_offset = pio_add_program(sd_pio, &sd_cmd_or_dat_program);
